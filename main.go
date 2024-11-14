@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
@@ -31,10 +32,36 @@ type PacketInfo struct {
 	ContentType string
 	TLSVersion  string
 	JA3         string
+	Reasons     []string
 }
 
 // Protocol definitions
 var (
+	// Color formatters
+	redBold     = color.New(color.FgRed, color.Bold)
+	greenBold   = color.New(color.FgGreen, color.Bold)
+	yellowBold  = color.New(color.FgYellow, color.Bold)
+	blueBold    = color.New(color.FgBlue, color.Bold)
+	magentaBold = color.New(color.FgMagenta, color.Bold)
+	cyanBold    = color.New(color.FgCyan, color.Bold)
+	grayBold    = color.New(color.FgBlack, color.Bold)
+	whiteBold   = color.New(color.FgWhite, color.Bold)
+
+	// Color categories for different types of detections
+	colorMap = map[string]*color.Color{
+		"Authentication":     redBold,     // Security sensitive
+		"API Key":            redBold,     // Security sensitive
+		"Credit Card":        redBold,     // Security sensitive
+		"Private Key":        redBold,     // Security sensitive
+		"JWT":                redBold,     // Security sensitive
+		"Email":              yellowBold,  // Personal data
+		"Sensitive Protocol": magentaBold, // Protocol detection
+		"Known Application":  blueBold,    // Application detection
+		"TLS SNI":            cyanBold,    // TLS related
+		"Interesting Path":   greenBold,   // HTTP paths
+		"Default":            grayBold,    // Default color
+	}
+
 	sensitiveDataPatterns = map[string]*regexp.Regexp{
 		"Email":          regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
 		"Credit Card":    regexp.MustCompile(`\b(?:\d[ -]*?){13,16}\b`),
@@ -71,10 +98,6 @@ var (
 		27017: "MongoDB",
 	}
 
-	// HTTP detection patterns
-	httpMethods         = []string{"GET ", "POST ", "HEAD ", "PUT ", "DELETE ", "OPTIONS ", "CONNECT ", "TRACE "}
-	httpResponsePattern = regexp.MustCompile(`^HTTP/\d\.\d\s+\d{3}`)
-
 	// Application layer patterns
 	patterns = map[string]*regexp.Regexp{
 		"HTTP":       regexp.MustCompile(`^(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|CONNECT|TRACE)\s`),
@@ -96,6 +119,7 @@ var (
 		"TikTok":    {"tiktok.com", "musical.ly", "bytedance.com"},
 		"Zoom":      {"zoom.us", "zoom.com"},
 		"Spotify":   {"spotify.com", "spotify.net", "spotifycdn.com"},
+		"Bolt":      {"bolt.eu", "bolt.com", "bolt.eu.com"},
 	}
 )
 
@@ -109,13 +133,14 @@ var (
 )
 
 func init() {
-	flag.StringVar(&iface, "i", "en8", "Interface to capture packets from")
+	flag.StringVar(&iface, "i", "en0", "Interface to capture packets from")
 	flag.Int64Var(&snaplen, "s", 1600, "Snapshot length")
 	flag.BoolVar(&promisc, "p", true, "Promiscuous mode")
 	flag.DurationVar(&timeout, "t", pcap.BlockForever, "Capture timeout")
 	flag.StringVar(&filter, "f", "tcp", "BPF filter")
 	flag.BoolVar(&verbose, "v", false, "Verbose output")
 	flag.Parse()
+
 }
 
 func main() {
@@ -162,6 +187,26 @@ func detectProtocol(payload []byte, defaultProtocol string) string {
 		// QUIC check
 		if payload[0] == 0x00 && len(payload) > 5 {
 			return "QUIC"
+		}
+
+		// BitTorrent check
+		if patterns["BitTorrent"].Match(payload) {
+			return "BitTorrent"
+		}
+
+		// SSH check
+		if patterns["SSH"].Match(payload) {
+			return "SSH"
+		}
+
+		// SMTP check
+		if patterns["SMTP"].Match(payload) {
+			return "SMTP"
+		}
+
+		// FTP check
+		if patterns["FTP"].Match(payload) {
+			return "FTP"
 		}
 	}
 
@@ -359,15 +404,19 @@ func analyzePacket(packet gopacket.Packet) *PacketInfo {
 	}
 
 	info.Application = strings.Join(reasons, ", ")
+	info.Reasons = reasons
 	return info
 }
 
 func printPacketInfo(info *PacketInfo) {
-	fmt.Printf(
-		"\n[!] Interesting Packet Detected [%s]\n",
+	// Print timestamp header
+	fmt.Printf("\n")
+	whiteBold.Printf(
+		"[!] Interesting Packet Detected [%s]\n",
 		info.Timestamp.Format("15:04:05"),
 	)
 
+	// Print connection details
 	fmt.Printf(
 		"    %s:%d → %s:%d\n",
 		info.SrcIP,
@@ -376,34 +425,65 @@ func printPacketInfo(info *PacketInfo) {
 		info.DstPort,
 	)
 
+	// Print protocol and size
 	fmt.Printf(
 		"    Protocol: %s | Size: %d bytes\n",
 		info.Protocol,
 		info.PayloadSize,
 	)
 
-	if info.Application != "" {
-		fmt.Printf("    Reason(s): %s\n", info.Application)
+	// Print reasons with appropriate colors
+	if len(info.Reasons) > 0 {
+		fmt.Print("    Reasons: ")
+		for i, reason := range info.Reasons {
+			// Determine the color based on the reason type
+			var colorPrinter *color.Color
+			found := false
+
+			// Check each category prefix
+			for category, printer := range colorMap {
+				if strings.Contains(reason, category) {
+					colorPrinter = printer
+					found = true
+					break
+				}
+			}
+
+			// Use default color if no specific category matched
+			if !found {
+				colorPrinter = colorMap["Default"]
+			}
+
+			// Print the reason with the determined color
+			colorPrinter.Print(reason)
+
+			// Add comma if not the last reason
+			if i < len(info.Reasons)-1 {
+				fmt.Print(", ")
+			}
+		}
+		fmt.Println()
 	}
 
+	// Print additional details if available
 	if info.SNI != "" {
-		fmt.Printf("    SNI: %s\n", info.SNI)
+		cyanBold.Printf("    SNI: %s\n", info.SNI)
 	}
 
 	if info.TLSVersion != "" {
-		fmt.Printf("    TLS Version: %s\n", info.TLSVersion)
+		cyanBold.Printf("    TLS Version: %s\n", info.TLSVersion)
 	}
 
 	if info.HTTPHost != "" {
-		fmt.Printf("    Host: %s\n", info.HTTPHost)
+		blueBold.Printf("    Host: %s\n", info.HTTPHost)
 	}
 
 	if info.ContentType != "" {
-		fmt.Printf("    Content-Type: %s\n", info.ContentType)
+		whiteBold.Printf("    Content-Type: %s\n", info.ContentType)
 	}
 
 	if info.PayloadHex != "" {
-		fmt.Printf("    Payload Preview: %s\n", info.PayloadHex)
+		yellowBold.Printf("    Payload Preview: %s\n", info.PayloadHex)
 	}
 }
 
