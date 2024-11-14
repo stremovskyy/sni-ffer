@@ -1,0 +1,99 @@
+# Network interface settings
+interface: "en0"
+snapshot_length: 1600
+promisc_mode: true
+timeout: "0s"  # Use "0s" for infinite, or specify duration like "30s", "5m"
+filter: "tcp"
+verbose: false
+
+# Color scheme configuration
+color_scheme:
+  Authentication: "red,bold"
+  API Key: "red,bold"
+  Credit Card: "red,bold"
+  Private Key: "red,bold"
+  JWT: "red,bold"
+  Email: "yellow,bold"
+  Sensitive Protocol: "magenta,bold"
+  Known Application: "blue,bold"
+  TLS SNI: "cyan,bold"
+  Interesting Path: "green,bold"
+  Default: "gray,bold"
+
+# Well-known ports
+well_known_ports:
+  80: "HTTP"
+  443: "HTTPS"
+  21: "FTP"
+  22: "SSH"
+  23: "Telnet"
+  25: "SMTP"
+  53: "DNS"
+  110: "POP3"
+  143: "IMAP"
+  3306: "MySQL"
+  5432: "PostgreSQL"
+  6379: "Redis"
+  27017: "MongoDB"
+
+# Application signatures
+applications:
+  Netflix:
+    - "netflix.com"
+    - "nflx.net"
+  YouTube:
+    - "youtube.com"
+    - "googlevideo.com"
+    - "ytimg.com"
+  Facebook:
+    - "facebook.com"
+    - "fbcdn.net"
+    - "facebook.net"
+  Instagram:
+    - "instagram.com"
+    - "cdninstagram.com"
+  Twitter:
+    - "twitter.com"
+    - "twimg.com"
+  TikTok:
+    - "tiktok.com"
+    - "musical.ly"
+    - "bytedance.com"
+  Zoom:
+    - "zoom.us"
+    - "zoom.com"
+  Spotify:
+    - "spotify.com"
+    - "spotify.net"
+    - "spotifycdn.com"
+  Bolt:
+    - "bolt.eu"
+    - "bolt.com"
+    - "bolt.eu.com"
+
+# Interesting paths patterns
+interesting_paths:
+  Login: "(?i)/login|/auth|/signin|/oauth"
+  Admin: "(?i)/admin|/console|/dashboard"
+  API: "(?i)/api/|/v1/|/v2/|/graphql"
+  Payment: "(?i)/payment|/checkout|/cart"
+  User Data: "(?i)/user|/account|/profile"
+  File Transfer: "(?i)/upload|/download|/file|/document"
+
+# Sensitive data patterns
+sensitive_patterns:
+  Email: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+  Credit Card: "\\b(?:\\d[ -]*?){13,16}\\b"
+  Authentication: "(?i)login|credential|password|token|key|secret|bearer"
+  API Key: "(?i)(api[_-]?key|access[_-]?key|secret[_-]?key).[a-zA-Z0-9]{16,}"
+  JWT: "eyJ[A-Za-z0-9-_=]+\\.[A-Za-z0-9-_=]+\\.?[A-Za-z0-9-_.+/=]*"
+  Private Key: "(?i)-----BEGIN.*PRIVATE KEY-----"
+
+  protocol_patterns:
+    HTTP: "^(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|CONNECT|TRACE)\s"
+    TLS: "^\x16\x03[\x00-\x03]"
+    SSH: "^SSH-\d\.\d"
+    SMTP: "^(?:220|250|354|450|500)"
+    FTP: "^(?:220|230|331|530)"
+    DNS: "^.{2}[\x01\x02].{2}"
+    BitTorrent: "^(\x13|d1:)BitTorrent protocol"

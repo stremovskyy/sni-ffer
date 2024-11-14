@@ -5,6 +5,7 @@ go 1.23.2
 require (
 	github.com/fatih/color v1.18.0
 	github.com/google/gopacket v1.1.19
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

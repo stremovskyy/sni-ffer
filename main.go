@@ -1,12 +1,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
-	"regexp"
+	"os"
 	"strings"
 	"time"
 
@@ -16,121 +17,19 @@ import (
 	"github.com/google/gopacket/pcap"
 )
 
-// Packet metadata structure
-type PacketInfo struct {
-	Timestamp   time.Time
-	SrcIP       string
-	DstIP       string
-	SrcPort     uint16
-	DstPort     uint16
-	Protocol    string
-	Application string
-	PayloadSize int
-	PayloadHex  string
-	SNI         string
-	HTTPHost    string
-	ContentType string
-	TLSVersion  string
-	JA3         string
-	Reasons     []string
-}
+// GlobalConfig holds the parsed configuration
+var GlobalConfig Config
 
-// Protocol definitions
+// CLI flags
 var (
-	// Color formatters
-	redBold     = color.New(color.FgRed, color.Bold)
-	greenBold   = color.New(color.FgGreen, color.Bold)
-	yellowBold  = color.New(color.FgYellow, color.Bold)
-	blueBold    = color.New(color.FgBlue, color.Bold)
-	magentaBold = color.New(color.FgMagenta, color.Bold)
-	cyanBold    = color.New(color.FgCyan, color.Bold)
-	grayBold    = color.New(color.FgBlack, color.Bold)
-	whiteBold   = color.New(color.FgWhite, color.Bold)
-
-	// Color categories for different types of detections
-	colorMap = map[string]*color.Color{
-		"Authentication":     redBold,     // Security sensitive
-		"API Key":            redBold,     // Security sensitive
-		"Credit Card":        redBold,     // Security sensitive
-		"Private Key":        redBold,     // Security sensitive
-		"JWT":                redBold,     // Security sensitive
-		"Email":              yellowBold,  // Personal data
-		"Sensitive Protocol": magentaBold, // Protocol detection
-		"Known Application":  blueBold,    // Application detection
-		"TLS SNI":            cyanBold,    // TLS related
-		"Interesting Path":   greenBold,   // HTTP paths
-		"Default":            grayBold,    // Default color
-	}
-
-	sensitiveDataPatterns = map[string]*regexp.Regexp{
-		"Email":          regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
-		"Credit Card":    regexp.MustCompile(`\b(?:\d[ -]*?){13,16}\b`),
-		"Authentication": regexp.MustCompile(`(?i)login|credential|password|token|key|secret|bearer`),
-		"API Key":        regexp.MustCompile(`(?i)(api[_-]?key|access[_-]?key|secret[_-]?key).[a-zA-Z0-9]{16,}`),
-		"JWT":            regexp.MustCompile(`eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*`),
-		"Private Key":    regexp.MustCompile(`(?i)-----BEGIN.*PRIVATE KEY-----`),
-	}
-
-	// Interesting domains and paths
-	interestingPaths = map[string]*regexp.Regexp{
-		"Login":         regexp.MustCompile(`(?i)/login|/auth|/signin|/oauth`),
-		"Admin":         regexp.MustCompile(`(?i)/admin|/console|/dashboard`),
-		"API":           regexp.MustCompile(`(?i)/api/|/v1/|/v2/|/graphql`),
-		"Payment":       regexp.MustCompile(`(?i)/payment|/checkout|/cart`),
-		"User Data":     regexp.MustCompile(`(?i)/user|/account|/profile`),
-		"File Transfer": regexp.MustCompile(`(?i)/upload|/download|/file|/document`),
-	}
-
-	// Sensitive ports and protocols remain the same as in original
-	wellKnownPorts = map[uint16]string{
-		80:    "HTTP",
-		443:   "HTTPS",
-		21:    "FTP",
-		22:    "SSH",
-		23:    "Telnet",
-		25:    "SMTP",
-		53:    "DNS",
-		110:   "POP3",
-		143:   "IMAP",
-		3306:  "MySQL",
-		5432:  "PostgreSQL",
-		6379:  "Redis",
-		27017: "MongoDB",
-	}
-
-	// Application layer patterns
-	patterns = map[string]*regexp.Regexp{
-		"HTTP":       regexp.MustCompile(`^(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|CONNECT|TRACE)\s`),
-		"TLS":        regexp.MustCompile(`^\x16\x03[\x00-\x03]`),
-		"SSH":        regexp.MustCompile(`^SSH-\d\.\d`),
-		"SMTP":       regexp.MustCompile(`^(?:220|250|354|450|500)`),
-		"FTP":        regexp.MustCompile(`^(?:220|230|331|530)`),
-		"DNS":        regexp.MustCompile(`^.{2}[\x01\x02].{2}`),
-		"BitTorrent": regexp.MustCompile(`^(\x13|d1:)BitTorrent protocol`),
-	}
-
-	// Common application signatures
-	appSignatures = map[string][]string{
-		"Netflix":   {"netflix.com", "nflx.net"},
-		"YouTube":   {"youtube.com", "googlevideo.com", "ytimg.com"},
-		"Facebook":  {"facebook.com", "fbcdn.net", "facebook.net"},
-		"Instagram": {"instagram.com", "cdninstagram.com"},
-		"Twitter":   {"twitter.com", "twimg.com"},
-		"TikTok":    {"tiktok.com", "musical.ly", "bytedance.com"},
-		"Zoom":      {"zoom.us", "zoom.com"},
-		"Spotify":   {"spotify.com", "spotify.net", "spotifycdn.com"},
-		"Bolt":      {"bolt.eu", "bolt.com", "bolt.eu.com"},
-	}
-)
-
-var (
-	iface    string
-	snaplen  int64
-	promisc  bool
-	timeout  time.Duration
-	filter   string
-	verbose  bool
-	lsIfaces bool
+	iface        string
+	snaplen      int64
+	promisc      bool
+	timeout      time.Duration
+	filter       string
+	verbose      bool
+	tryToDecrypt = false
+	lsIfaces     = false
 )
 
 func init() {
@@ -140,11 +39,65 @@ func init() {
 	flag.DurationVar(&timeout, "t", pcap.BlockForever, "Capture timeout")
 	flag.StringVar(&filter, "f", "tcp", "BPF filter")
 	flag.BoolVar(&verbose, "v", false, "Verbose output")
+	flag.BoolVar(&tryToDecrypt, "d", false, "Try to decrypt payloads")
 	flag.BoolVar(&lsIfaces, "ls", false, "List available interfaces")
 	flag.Parse()
+
+	configLocations := []string{
+		"config.yml",
+		"/etc/sni-ffer/config.yml",
+		"$HOME/.config/sni-ffer/config.yml",
+	}
+
+	configLoaded := false
+	for _, loc := range configLocations {
+		expandedLoc := os.ExpandEnv(loc)
+		if err := LoadConfig(expandedLoc); err == nil {
+			configLoaded = true
+			break
+		}
+	}
+
+	if !configLoaded {
+		log.Printf("No configuration files found, using default configuration")
+		GlobalConfig = defaultConfig
+	}
+
+	// Parse timeout duration
+	var err error
+	timeout, err = time.ParseDuration(GlobalConfig.Timeout)
+	if err != nil {
+		log.Printf("Invalid timeout value in config, using default: %v", err)
+		timeout = pcap.BlockForever
+	}
+
+	if iface != "en0" {
+		GlobalConfig.Interface = iface
+	}
+
+	if snaplen != 1600 {
+		GlobalConfig.SnapshotLength = snaplen
+	}
+
+	if promisc != true {
+		GlobalConfig.PromiscMode = promisc
+	}
+
+	if filter != "tcp" {
+		GlobalConfig.Filter = filter
+	}
+
+	if verbose != false {
+		GlobalConfig.Verbose = verbose
+	}
+
+	if tryToDecrypt != false {
+		tryToDecrypt = true
+	}
 }
 
 func main() {
+	// List interfaces and exit
 	if lsIfaces {
 		ifaces, err := pcap.FindAllDevs()
 		if err != nil {
@@ -153,25 +106,30 @@ func main() {
 
 		fmt.Println("Available interfaces:")
 		for _, iface := range ifaces {
-
-			if iface.Addresses != nil && len(iface.Addresses) > 0 {
-				fmt.Printf("\t%s (%s) : %s\n", iface.Name, iface.Description, iface.Addresses[0].IP)
+			if len(iface.Addresses) > 0 {
+				fmt.Printf("\t%s (%s) - %s\n", iface.Name, iface.Description, iface.Addresses[0].IP)
 			}
 		}
 		return
 	}
-	handle, err := pcap.OpenLive(iface, int32(snaplen), promisc, timeout)
+
+	handle, err := pcap.OpenLive(
+		GlobalConfig.Interface,
+		int32(GlobalConfig.SnapshotLength),
+		GlobalConfig.PromiscMode,
+		timeout,
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer handle.Close()
 
-	if err := handle.SetBPFFilter(filter); err != nil {
+	if err := handle.SetBPFFilter(GlobalConfig.Filter); err != nil {
 		log.Fatal(err)
 	}
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-	fmt.Printf("Started capturing on %s...\n\n", iface)
+	fmt.Printf("Started capturing on %s...\n\n", GlobalConfig.Interface)
 
 	for packet := range packetSource.Packets() {
 		info := analyzePacket(packet)
@@ -187,7 +145,7 @@ func detectProtocol(payload []byte, defaultProtocol string) string {
 	}
 
 	// Check against protocol patterns
-	for proto, pattern := range patterns {
+	for proto, pattern := range GlobalConfig.ProtocolPatternsMap {
 		if pattern.Match(payload) {
 			return proto
 		}
@@ -205,24 +163,10 @@ func detectProtocol(payload []byte, defaultProtocol string) string {
 			return "QUIC"
 		}
 
-		// BitTorrent check
-		if patterns["BitTorrent"].Match(payload) {
-			return "BitTorrent"
-		}
-
-		// SSH check
-		if patterns["SSH"].Match(payload) {
-			return "SSH"
-		}
-
-		// SMTP check
-		if patterns["SMTP"].Match(payload) {
-			return "SMTP"
-		}
-
-		// FTP check
-		if patterns["FTP"].Match(payload) {
-			return "FTP"
+		for protocol, pattern := range GlobalConfig.ProtocolPatternsMap {
+			if pattern.Match(payload) {
+				return protocol
+			}
 		}
 	}
 
@@ -300,7 +244,7 @@ func identifyApplication(host string) string {
 
 	host = strings.ToLower(host)
 
-	for app, domains := range appSignatures {
+	for app, domains := range GlobalConfig.Applications {
 		for _, domain := range domains {
 			if strings.Contains(host, domain) {
 				return app
@@ -331,7 +275,7 @@ func isInterestingPacket(info *PacketInfo, payload []byte) (bool, []string) {
 	// Check payload for sensitive data patterns
 	if len(payload) > 0 {
 		payloadStr := string(payload)
-		for patternName, pattern := range sensitiveDataPatterns {
+		for patternName, pattern := range GlobalConfig.PatternsMap {
 			if pattern.MatchString(payloadStr) {
 				reasons = append(reasons, fmt.Sprintf("Contains %s", patternName))
 			}
@@ -339,7 +283,7 @@ func isInterestingPacket(info *PacketInfo, payload []byte) (bool, []string) {
 
 		// Check for interesting HTTP paths
 		if info.Protocol == "HTTP" {
-			for pathType, pattern := range interestingPaths {
+			for pathType, pattern := range GlobalConfig.PathsMap {
 				if pattern.MatchString(payloadStr) {
 					reasons = append(reasons, fmt.Sprintf("Interesting Path: %s", pathType))
 				}
@@ -355,6 +299,10 @@ func isInterestingPacket(info *PacketInfo, payload []byte) (bool, []string) {
 	// Check for TLS information
 	if info.SNI != "" {
 		reasons = append(reasons, fmt.Sprintf("TLS SNI: %s", info.SNI))
+	}
+
+	if info.PayloadString != "" && tryToDecrypt {
+		reasons = append(reasons, fmt.Sprintf("Payload: %s", info.PayloadString))
 	}
 
 	return len(reasons) > 0, reasons
@@ -386,9 +334,9 @@ func analyzePacket(packet gopacket.Packet) *PacketInfo {
 	}
 
 	// Existing protocol detection logic...
-	if proto, ok := wellKnownPorts[info.DstPort]; ok {
+	if proto, ok := GlobalConfig.WellKnownPorts[info.DstPort]; ok {
 		info.Protocol = proto
-	} else if proto, ok := wellKnownPorts[info.SrcPort]; ok {
+	} else if proto, ok := GlobalConfig.WellKnownPorts[info.SrcPort]; ok {
 		info.Protocol = proto
 	}
 
@@ -410,6 +358,13 @@ func analyzePacket(packet gopacket.Packet) *PacketInfo {
 			if info.HTTPHost != "" {
 				info.Application = identifyApplication(info.HTTPHost)
 			}
+		}
+
+		decryptedPayload := TryDecryptPayload(tcp.Payload)
+		info.PayloadHex = hex.EncodeToString([]byte(decryptedPayload)[:min(16, len(decryptedPayload))])
+
+		if isReadable([]byte(decryptedPayload)) {
+			info.PayloadString = decryptedPayload
 		}
 	}
 
@@ -453,21 +408,18 @@ func printPacketInfo(info *PacketInfo) {
 		fmt.Print("    Reasons: ")
 		for i, reason := range info.Reasons {
 			// Determine the color based on the reason type
-			var colorPrinter *color.Color
-			found := false
+			var colorPrinter *color.Color = GlobalConfig.ColorMap["Default"]
 
-			// Check each category prefix
-			for category, printer := range colorMap {
-				if strings.Contains(reason, category) {
-					colorPrinter = printer
-					found = true
-					break
-				}
+			if colorPrinter == nil {
+				colorPrinter = greenBold
 			}
 
-			// Use default color if no specific category matched
-			if !found {
-				colorPrinter = colorMap["Default"]
+			// Check each category prefix
+			for category, printer := range GlobalConfig.ColorMap {
+				if strings.Contains(reason, category) {
+					colorPrinter = printer
+					break
+				}
 			}
 
 			// Print the reason with the determined color
@@ -501,6 +453,10 @@ func printPacketInfo(info *PacketInfo) {
 	if info.PayloadHex != "" {
 		yellowBold.Printf("    Payload Preview: %s\n", info.PayloadHex)
 	}
+
+	if info.PayloadString != "" {
+		yellowBold.Printf("    Payload Decrypt: %s\n", info.PayloadString)
+	}
 }
 
 func min(a, b int) int {
@@ -509,6 +465,7 @@ func min(a, b int) int {
 	}
 	return b
 }
+
 func extractSNI(payload []byte) string {
 	if len(payload) < 43 {
 		return ""
@@ -575,4 +532,51 @@ func extractSNI(payload []byte) string {
 	}
 
 	return ""
+}
+
+// DecryptXOR decrypts data that has been XOR encrypted with a single byte key.
+func DecryptXOR(data []byte, key byte) []byte {
+	decrypted := make([]byte, len(data))
+	for i := range data {
+		decrypted[i] = data[i] ^ key
+	}
+	return decrypted
+}
+
+// DecodeBase64 attempts to decode Base64 encoded data.
+func DecodeBase64(data []byte) ([]byte, error) {
+	decoded, err := base64.StdEncoding.DecodeString(string(data))
+	if err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+// TryDecryptPayload attempts to detect and decrypt payloads.
+func TryDecryptPayload(payload []byte) string {
+	if strings.Contains(string(payload), "==") || strings.Contains(string(payload), "=") {
+		// Attempt Base64 decryption
+		decoded, err := DecodeBase64(payload)
+		if err == nil {
+			return string(decoded)
+		}
+	}
+
+	// Attempt XOR decryption with a common XOR key (example: 0x5A)
+	decryptedXOR := DecryptXOR(payload, 0x5A)
+	if isReadable(decryptedXOR) {
+		return string(decryptedXOR)
+	}
+
+	return string(payload)
+}
+
+// Helper to check if decrypted text is readable
+func isReadable(data []byte) bool {
+	for _, b := range data {
+		if b < 32 && b != 9 && b != 10 && b != 13 { // exclude control chars
+			return false
+		}
+	}
+	return true
 }
