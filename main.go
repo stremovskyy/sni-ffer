@@ -493,8 +493,6 @@ func min(a, b int) int {
 	}
 	return b
 }
-
-// extractSNI implementation remains the same as in your original code
 func extractSNI(payload []byte) string {
 	if len(payload) < 43 {
 		return ""
@@ -523,7 +521,10 @@ func extractSNI(payload []byte) string {
 	pos += 2
 
 	endOfExtensions := pos + extensionsLength
-	for pos+4 <= endOfExtensions {
+	for pos+4 <= endOfExtensions && pos+4 <= len(payload) {
+		if pos+4 > len(payload) {
+			return ""
+		}
 		extensionType := binary.BigEndian.Uint16(payload[pos : pos+2])
 		extensionLength := int(binary.BigEndian.Uint16(payload[pos+2 : pos+4]))
 		pos += 4
@@ -552,6 +553,9 @@ func extractSNI(payload []byte) string {
 		}
 
 		pos += extensionLength
+		if pos > len(payload) {
+			return ""
+		}
 	}
 
 	return ""
