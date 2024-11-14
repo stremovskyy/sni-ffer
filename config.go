@@ -177,38 +177,11 @@ func LoadConfig(filename string) error {
 		protocolPatterns[name] = compiled
 	}
 
-	// Merging global configuration
-	// GlobalConfig.ColorMap = colorMap
-	// GlobalConfig.PatternsMap = patterns
-	// GlobalConfig.PathsMap = interestingPaths
-	// GlobalConfig.ProtocolPatternsMap = protocolPatterns
-	for k, v := range colorMap {
-		if GlobalConfig.ColorMap == nil {
-			GlobalConfig.ColorMap = make(map[string]*color.Color)
-		}
-		GlobalConfig.ColorMap[k] = v
-	}
-
-	for k, v := range patterns {
-		if GlobalConfig.PatternsMap == nil {
-			GlobalConfig.PatternsMap = make(map[string]*regexp.Regexp)
-		}
-		GlobalConfig.PatternsMap[k] = v
-	}
-
-	for k, v := range interestingPaths {
-		if GlobalConfig.PathsMap == nil {
-			GlobalConfig.PathsMap = make(map[string]*regexp.Regexp)
-		}
-		GlobalConfig.PathsMap[k] = v
-	}
-
-	for k, v := range protocolPatterns {
-		if GlobalConfig.ProtocolPatternsMap == nil {
-			GlobalConfig.ProtocolPatternsMap = make(map[string]*regexp.Regexp)
-		}
-		GlobalConfig.ProtocolPatternsMap[k] = v
-	}
+	// setting the global config
+	GlobalConfig.ColorMap = colorMap
+	GlobalConfig.PatternsMap = patterns
+	GlobalConfig.PathsMap = interestingPaths
+	GlobalConfig.ProtocolPatternsMap = protocolPatterns
 
 	return nil
 }

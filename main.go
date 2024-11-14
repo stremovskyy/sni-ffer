@@ -151,22 +151,41 @@ func detectProtocol(payload []byte, defaultProtocol string) string {
 		}
 	}
 
-	// Additional protocol detection logic
-	if len(payload) >= 2 {
-		// DNS check (standard query or response)
-		if (payload[2] == 0x01 || payload[2] == 0x02) && len(payload) > 12 {
-			return "DNS"
-		}
+	// DNS check (standard query or response)
+	if len(payload) > 2 && (payload[2] == 0x01 || payload[2] == 0x02) && len(payload) > 12 {
+		return "DNS"
+	}
 
-		// QUIC check
-		if payload[0] == 0x00 && len(payload) > 5 {
-			return "QUIC"
-		}
+	// QUIC check
+	if payload[0] == 0x00 && len(payload) > 5 {
+		return "QUIC"
+	}
 
-		for protocol, pattern := range GlobalConfig.ProtocolPatternsMap {
-			if pattern.Match(payload) {
-				return protocol
-			}
+	// HTTP check (HTTP request usually starts with "GET", "POST", etc.)
+	if len(payload) > 3 && (payload[0] == 0x47 || payload[0] == 0x50) { // 0x47 = 'G', 0x50 = 'P'
+		if string(payload[:3]) == "GET" || string(payload[:3]) == "POST" || string(payload[:3]) == "PUT" || string(payload[:3]) == "DELETE" {
+			return "HTTP"
+		}
+	}
+
+	// FTP check (FTP command starts with "USER", "PASS", etc.)
+	if len(payload) > 3 && (payload[0] == 0x55 || payload[0] == 0x50) { // 0x55 = 'U', 0x50 = 'P'
+		if string(payload[:4]) == "USER" || string(payload[:4]) == "PASS" {
+			return "FTP"
+		}
+	}
+
+	// TLS/SSL check (TLS handshake starts with 0x16 and version bytes)
+	if len(payload) > 0 && payload[0] == 0x16 {
+		if len(payload) > 1 && payload[1] == 0x03 { // TLS version starts with 0x03
+			return "TLS"
+		}
+	}
+
+	// Custom Protocol detection via predefined patterns
+	for protocol, pattern := range GlobalConfig.ProtocolPatternsMap {
+		if pattern.Match(payload) {
+			return protocol
 		}
 	}
 
