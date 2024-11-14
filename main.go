@@ -124,12 +124,13 @@ var (
 )
 
 var (
-	iface   string
-	snaplen int64
-	promisc bool
-	timeout time.Duration
-	filter  string
-	verbose bool
+	iface    string
+	snaplen  int64
+	promisc  bool
+	timeout  time.Duration
+	filter   string
+	verbose  bool
+	lsIfaces bool
 )
 
 func init() {
@@ -139,11 +140,26 @@ func init() {
 	flag.DurationVar(&timeout, "t", pcap.BlockForever, "Capture timeout")
 	flag.StringVar(&filter, "f", "tcp", "BPF filter")
 	flag.BoolVar(&verbose, "v", false, "Verbose output")
+	flag.BoolVar(&lsIfaces, "ls", false, "List available interfaces")
 	flag.Parse()
-
 }
 
 func main() {
+	if lsIfaces {
+		ifaces, err := pcap.FindAllDevs()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Println("Available interfaces:")
+		for _, iface := range ifaces {
+
+			if iface.Addresses != nil && len(iface.Addresses) > 0 {
+				fmt.Printf("\t%s (%s) : %s\n", iface.Name, iface.Description, iface.Addresses[0].IP)
+			}
+		}
+		return
+	}
 	handle, err := pcap.OpenLive(iface, int32(snaplen), promisc, timeout)
 	if err != nil {
 		log.Fatal(err)
