@@ -13,18 +13,18 @@ import (
 
 // Config represents the main configuration structure
 type Config struct {
-	Interface        string              `yaml:"interface"`
-	SnapshotLength   int64               `yaml:"snapshot_length"`
-	PromiscMode      bool                `yaml:"promisc_mode"`
-	Timeout          string              `yaml:"timeout"`
-	Filter           string              `yaml:"filter"`
-	Verbose          bool                `yaml:"verbose"`
-	ColorScheme      map[string]string   `yaml:"color_scheme"`
-	Patterns         map[string]string   `yaml:"patterns"`
-	WellKnownPorts   map[uint16]string   `yaml:"well_known_ports"`
-	Applications     map[string][]string `yaml:"applications"`
-	Paths            map[string]string   `yaml:"interesting_paths"`
-	ProtocolPatterns map[string]string   `yaml:"protocol_patterns"`
+	Interface         string              `yaml:"interface"`
+	SnapshotLength    int64               `yaml:"snapshot_length"`
+	PromiscMode       bool                `yaml:"promisc_mode"`
+	Timeout           string              `yaml:"timeout"`
+	Filter            string              `yaml:"filter"`
+	Verbose           bool                `yaml:"verbose"`
+	ColorScheme       map[string]string   `yaml:"color_scheme"`
+	SensitivePatterns map[string]string   `yaml:"sensitive_patterns"`
+	WellKnownPorts    map[uint16]string   `yaml:"well_known_ports"`
+	Applications      map[string][]string `yaml:"applications"`
+	Paths             map[string]string   `yaml:"interesting_paths"`
+	ProtocolPatterns  map[string]string   `yaml:"protocol_patterns"`
 
 	ColorMap            map[string]*color.Color
 	PatternsMap         map[string]*regexp.Regexp
@@ -67,7 +67,7 @@ func LoadConfig(filename string) error {
 	// Start with default configuration
 	GlobalConfig = defaultConfig
 
-	// find the file
+	// check if the file exists
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		return nil
 	}
@@ -107,7 +107,21 @@ func LoadConfig(filename string) error {
 
 	// Merge color scheme
 	for k, v := range fileConfig.ColorScheme {
+		if GlobalConfig.ColorScheme == nil {
+			GlobalConfig.ColorScheme = make(map[string]string)
+		}
+
 		GlobalConfig.ColorScheme[k] = v
+	}
+
+	for k, v := range fileConfig.ProtocolPatterns {
+		if fileConfig.ProtocolPatterns == nil {
+			GlobalConfig.ProtocolPatterns = make(map[string]string)
+		}
+
+		// unescape the pattern
+		v = strings.ReplaceAll(v, `\\`, `\`)
+		GlobalConfig.ProtocolPatterns[k] = v
 	}
 
 	// Initialize color formatters
@@ -117,13 +131,17 @@ func LoadConfig(filename string) error {
 	}
 
 	// Merge patterns
-	for k, v := range fileConfig.Patterns {
-		GlobalConfig.Patterns[k] = v
+	for k, v := range fileConfig.SensitivePatterns {
+		if GlobalConfig.SensitivePatterns == nil {
+			GlobalConfig.SensitivePatterns = make(map[string]string)
+		}
+
+		GlobalConfig.SensitivePatterns[k] = v
 	}
 
 	// Compile patterns
 	patterns := make(map[string]*regexp.Regexp)
-	for name, pattern := range GlobalConfig.Patterns {
+	for name, pattern := range GlobalConfig.SensitivePatterns {
 		compiled, err := regexp.Compile(pattern)
 		if err != nil {
 			return fmt.Errorf("error compiling pattern %s: %v", name, err)

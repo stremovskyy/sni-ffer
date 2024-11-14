@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/md5"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -52,9 +53,12 @@ func init() {
 	configLoaded := false
 	for _, loc := range configLocations {
 		expandedLoc := os.ExpandEnv(loc)
+
 		if err := LoadConfig(expandedLoc); err == nil {
 			configLoaded = true
 			break
+		} else {
+			log.Fatalf("Error loading config from %s: %v", expandedLoc, err)
 		}
 	}
 
@@ -221,19 +225,27 @@ func getTLSVersion(payload []byte) string {
 }
 
 func calculateJA3(payload []byte) string {
-	// Simplified JA3 fingerprint calculation
-	// In a real implementation, you would extract:
-	// - TLS version
-	// - Cipher suites
-	// - Extensions
-	// - Elliptic curves
-	// - Elliptic curve formats
 	if len(payload) < 40 {
 		return ""
 	}
 
-	// This is a placeholder - implement full JA3 calculation here
-	return fmt.Sprintf("JA3:%x", payload[0:16])
+	// Extract necessary components from the handshake
+	tlsVersion := payload[0:2]             // TLS version (2 bytes)
+	cipherSuites := payload[2:34]          // Cipher suites (32 bytes, just an example)
+	extensions := payload[34:len(payload)] // Extensions, starting after cipher suites
+
+	// Generate the JA3 string by concatenating components
+	ja3String := fmt.Sprintf(
+		"%s,%x,%x,%x",
+		tlsVersion, cipherSuites, extensions,
+	)
+
+	// Compute the MD5 hash of the JA3 string to create the fingerprint
+	hash := md5.New()
+	hash.Write([]byte(ja3String))
+	ja3Fingerprint := fmt.Sprintf("%x", hash.Sum(nil))
+
+	return ja3Fingerprint
 }
 
 func extractHTTPHost(payload []byte) string {
@@ -459,6 +471,10 @@ func printPacketInfo(info *PacketInfo) {
 
 	if info.TLSVersion != "" {
 		cyanBold.Printf("    TLS Version: %s\n", info.TLSVersion)
+	}
+
+	if info.JA3 != "" {
+		cyanBold.Printf("    JA3 Fingerprint: %s\n", info.JA3)
 	}
 
 	if info.HTTPHost != "" {
