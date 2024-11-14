@@ -2,123 +2,469 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/hex"
+	"flag"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 )
 
+// Packet metadata structure
+type PacketInfo struct {
+	Timestamp   time.Time
+	SrcIP       string
+	DstIP       string
+	SrcPort     uint16
+	DstPort     uint16
+	Protocol    string
+	Application string
+	PayloadSize int
+	PayloadHex  string
+	SNI         string
+	HTTPHost    string
+	ContentType string
+	TLSVersion  string
+	JA3         string
+}
+
+// Protocol definitions
+var (
+	sensitiveDataPatterns = map[string]*regexp.Regexp{
+		"Email":          regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
+		"Credit Card":    regexp.MustCompile(`\b(?:\d[ -]*?){13,16}\b`),
+		"Authentication": regexp.MustCompile(`(?i)login|credential|password|token|key|secret|bearer`),
+		"API Key":        regexp.MustCompile(`(?i)(api[_-]?key|access[_-]?key|secret[_-]?key).[a-zA-Z0-9]{16,}`),
+		"JWT":            regexp.MustCompile(`eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*`),
+		"Private Key":    regexp.MustCompile(`(?i)-----BEGIN.*PRIVATE KEY-----`),
+	}
+
+	// Interesting domains and paths
+	interestingPaths = map[string]*regexp.Regexp{
+		"Login":         regexp.MustCompile(`(?i)/login|/auth|/signin|/oauth`),
+		"Admin":         regexp.MustCompile(`(?i)/admin|/console|/dashboard`),
+		"API":           regexp.MustCompile(`(?i)/api/|/v1/|/v2/|/graphql`),
+		"Payment":       regexp.MustCompile(`(?i)/payment|/checkout|/cart`),
+		"User Data":     regexp.MustCompile(`(?i)/user|/account|/profile`),
+		"File Transfer": regexp.MustCompile(`(?i)/upload|/download|/file|/document`),
+	}
+
+	// Sensitive ports and protocols remain the same as in original
+	wellKnownPorts = map[uint16]string{
+		80:    "HTTP",
+		443:   "HTTPS",
+		21:    "FTP",
+		22:    "SSH",
+		23:    "Telnet",
+		25:    "SMTP",
+		53:    "DNS",
+		110:   "POP3",
+		143:   "IMAP",
+		3306:  "MySQL",
+		5432:  "PostgreSQL",
+		6379:  "Redis",
+		27017: "MongoDB",
+	}
+
+	// HTTP detection patterns
+	httpMethods         = []string{"GET ", "POST ", "HEAD ", "PUT ", "DELETE ", "OPTIONS ", "CONNECT ", "TRACE "}
+	httpResponsePattern = regexp.MustCompile(`^HTTP/\d\.\d\s+\d{3}`)
+
+	// Application layer patterns
+	patterns = map[string]*regexp.Regexp{
+		"HTTP":       regexp.MustCompile(`^(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|CONNECT|TRACE)\s`),
+		"TLS":        regexp.MustCompile(`^\x16\x03[\x00-\x03]`),
+		"SSH":        regexp.MustCompile(`^SSH-\d\.\d`),
+		"SMTP":       regexp.MustCompile(`^(?:220|250|354|450|500)`),
+		"FTP":        regexp.MustCompile(`^(?:220|230|331|530)`),
+		"DNS":        regexp.MustCompile(`^.{2}[\x01\x02].{2}`),
+		"BitTorrent": regexp.MustCompile(`^(\x13|d1:)BitTorrent protocol`),
+	}
+
+	// Common application signatures
+	appSignatures = map[string][]string{
+		"Netflix":   {"netflix.com", "nflx.net"},
+		"YouTube":   {"youtube.com", "googlevideo.com", "ytimg.com"},
+		"Facebook":  {"facebook.com", "fbcdn.net", "facebook.net"},
+		"Instagram": {"instagram.com", "cdninstagram.com"},
+		"Twitter":   {"twitter.com", "twimg.com"},
+		"TikTok":    {"tiktok.com", "musical.ly", "bytedance.com"},
+		"Zoom":      {"zoom.us", "zoom.com"},
+		"Spotify":   {"spotify.com", "spotify.net", "spotifycdn.com"},
+	}
+)
+
+var (
+	iface   string
+	snaplen int64
+	promisc bool
+	timeout time.Duration
+	filter  string
+	verbose bool
+)
+
+func init() {
+	flag.StringVar(&iface, "i", "en8", "Interface to capture packets from")
+	flag.Int64Var(&snaplen, "s", 1600, "Snapshot length")
+	flag.BoolVar(&promisc, "p", true, "Promiscuous mode")
+	flag.DurationVar(&timeout, "t", pcap.BlockForever, "Capture timeout")
+	flag.StringVar(&filter, "f", "tcp", "BPF filter")
+	flag.BoolVar(&verbose, "v", false, "Verbose output")
+	flag.Parse()
+}
+
 func main() {
-	// Open the network interface for capturing
-	handle, err := pcap.OpenLive("en8", 1600, true, pcap.BlockForever)
+	handle, err := pcap.OpenLive(iface, int32(snaplen), promisc, timeout)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer handle.Close()
 
-	// Set BPF filter for TCP traffic on port 443 (HTTPS)
-	err = handle.SetBPFFilter("tcp port 443")
-	if err != nil {
+	if err := handle.SetBPFFilter(filter); err != nil {
 		log.Fatal(err)
 	}
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-
-	fmt.Println("Started capturing TLS handshakes on en8...")
-	fmt.Println("Listening for SNI information...")
+	fmt.Printf("Started capturing on %s...\n\n", iface)
 
 	for packet := range packetSource.Packets() {
-		// Get TCP layer
-		tcpLayer := packet.Layer(layers.LayerTypeTCP)
-		if tcpLayer == nil {
-			continue
-		}
-
-		tcp, _ := tcpLayer.(*layers.TCP)
-
-		// Check for TLS Client Hello packets
-		payload := tcp.Payload
-		if len(payload) < 5 {
-			continue
-		}
-
-		// Check if it's a TLS handshake (Content Type = 22) and Client Hello
-		if payload[0] == 0x16 && payload[5] == 0x01 {
-			sni := extractSNI(payload)
-			if sni != "" {
-				fmt.Printf("Detected SNI: %s\n", sni)
-			}
+		info := analyzePacket(packet)
+		if info != nil {
+			printPacketInfo(info)
 		}
 	}
 }
 
+func detectProtocol(payload []byte, defaultProtocol string) string {
+	if len(payload) == 0 {
+		return defaultProtocol
+	}
+
+	// Check against protocol patterns
+	for proto, pattern := range patterns {
+		if pattern.Match(payload) {
+			return proto
+		}
+	}
+
+	// Additional protocol detection logic
+	if len(payload) >= 2 {
+		// DNS check (standard query or response)
+		if (payload[2] == 0x01 || payload[2] == 0x02) && len(payload) > 12 {
+			return "DNS"
+		}
+
+		// QUIC check
+		if payload[0] == 0x00 && len(payload) > 5 {
+			return "QUIC"
+		}
+	}
+
+	return defaultProtocol
+}
+
+func isTLSHandshake(payload []byte) bool {
+	return len(payload) > 5 &&
+		payload[0] == 0x16 && // Handshake
+		payload[1] == 0x03 && // SSL/TLS version
+		payload[5] == 0x01 // Client Hello
+}
+
+func getTLSVersion(payload []byte) string {
+	if len(payload) < 3 {
+		return "Unknown"
+	}
+
+	switch {
+	case payload[1] == 0x03 && payload[2] == 0x00:
+		return "SSL 3.0"
+	case payload[1] == 0x03 && payload[2] == 0x01:
+		return "TLS 1.0"
+	case payload[1] == 0x03 && payload[2] == 0x02:
+		return "TLS 1.1"
+	case payload[1] == 0x03 && payload[2] == 0x03:
+		return "TLS 1.2"
+	case payload[1] == 0x03 && payload[2] == 0x04:
+		return "TLS 1.3"
+	default:
+		return fmt.Sprintf("0x%02x%02x", payload[1], payload[2])
+	}
+}
+
+func calculateJA3(payload []byte) string {
+	// Simplified JA3 fingerprint calculation
+	// In a real implementation, you would extract:
+	// - TLS version
+	// - Cipher suites
+	// - Extensions
+	// - Elliptic curves
+	// - Elliptic curve formats
+	if len(payload) < 40 {
+		return ""
+	}
+
+	// This is a placeholder - implement full JA3 calculation here
+	return fmt.Sprintf("JA3:%x", payload[0:16])
+}
+
+func extractHTTPHost(payload []byte) string {
+	lines := strings.Split(string(payload), "\r\n")
+	for _, line := range lines {
+		if strings.HasPrefix(strings.ToLower(line), "host:") {
+			return strings.TrimSpace(line[5:])
+		}
+	}
+	return ""
+}
+
+func extractContentType(payload []byte) string {
+	lines := strings.Split(string(payload), "\r\n")
+	for _, line := range lines {
+		if strings.HasPrefix(strings.ToLower(line), "content-type:") {
+			return strings.TrimSpace(line[13:])
+		}
+	}
+	return ""
+}
+
+func identifyApplication(host string) string {
+	if host == "" {
+		return "Unknown"
+	}
+
+	host = strings.ToLower(host)
+
+	for app, domains := range appSignatures {
+		for _, domain := range domains {
+			if strings.Contains(host, domain) {
+				return app
+			}
+		}
+	}
+
+	return "Unknown"
+}
+
+func isInterestingPacket(info *PacketInfo, payload []byte) (bool, []string) {
+	reasons := []string{}
+
+	// Check for sensitive ports
+	sensitivePorts := map[uint16]string{
+		22:    "SSH",
+		23:    "Telnet",
+		3306:  "MySQL",
+		5432:  "PostgreSQL",
+		6379:  "Redis",
+		27017: "MongoDB",
+	}
+
+	if proto, ok := sensitivePorts[info.DstPort]; ok {
+		reasons = append(reasons, fmt.Sprintf("Sensitive Protocol: %s", proto))
+	}
+
+	// Check payload for sensitive data patterns
+	if len(payload) > 0 {
+		payloadStr := string(payload)
+		for patternName, pattern := range sensitiveDataPatterns {
+			if pattern.MatchString(payloadStr) {
+				reasons = append(reasons, fmt.Sprintf("Contains %s", patternName))
+			}
+		}
+
+		// Check for interesting HTTP paths
+		if info.Protocol == "HTTP" {
+			for pathType, pattern := range interestingPaths {
+				if pattern.MatchString(payloadStr) {
+					reasons = append(reasons, fmt.Sprintf("Interesting Path: %s", pathType))
+				}
+			}
+		}
+	}
+
+	// Check for specific applications
+	if info.Application != "Unknown" {
+		reasons = append(reasons, fmt.Sprintf("Known Application: %s", info.Application))
+	}
+
+	// Check for TLS information
+	if info.SNI != "" {
+		reasons = append(reasons, fmt.Sprintf("TLS SNI: %s", info.SNI))
+	}
+
+	return len(reasons) > 0, reasons
+}
+
+func analyzePacket(packet gopacket.Packet) *PacketInfo {
+	// Extract IP layer
+	ipLayer := packet.Layer(layers.LayerTypeIPv4)
+	if ipLayer == nil {
+		return nil
+	}
+	ip, _ := ipLayer.(*layers.IPv4)
+
+	// Extract TCP layer
+	tcpLayer := packet.Layer(layers.LayerTypeTCP)
+	if tcpLayer == nil {
+		return nil
+	}
+	tcp, _ := tcpLayer.(*layers.TCP)
+
+	info := &PacketInfo{
+		Timestamp:   packet.Metadata().Timestamp,
+		SrcIP:       ip.SrcIP.String(),
+		DstIP:       ip.DstIP.String(),
+		SrcPort:     uint16(tcp.SrcPort),
+		DstPort:     uint16(tcp.DstPort),
+		PayloadSize: len(tcp.Payload),
+		Application: "Unknown",
+	}
+
+	// Existing protocol detection logic...
+	if proto, ok := wellKnownPorts[info.DstPort]; ok {
+		info.Protocol = proto
+	} else if proto, ok := wellKnownPorts[info.SrcPort]; ok {
+		info.Protocol = proto
+	}
+
+	if len(tcp.Payload) > 0 {
+		info.PayloadHex = hex.EncodeToString(tcp.Payload[:min(16, len(tcp.Payload))])
+		info.Protocol = detectProtocol(tcp.Payload, info.Protocol)
+
+		if isTLSHandshake(tcp.Payload) {
+			info.Protocol = "TLS"
+			info.TLSVersion = getTLSVersion(tcp.Payload)
+			info.SNI = extractSNI(tcp.Payload)
+			info.JA3 = calculateJA3(tcp.Payload)
+			info.Application = identifyApplication(info.SNI)
+		}
+
+		if info.Protocol == "HTTP" {
+			info.HTTPHost = extractHTTPHost(tcp.Payload)
+			info.ContentType = extractContentType(tcp.Payload)
+			if info.HTTPHost != "" {
+				info.Application = identifyApplication(info.HTTPHost)
+			}
+		}
+	}
+
+	// Check if packet is interesting
+	interesting, reasons := isInterestingPacket(info, tcp.Payload)
+	if !interesting {
+		return nil
+	}
+
+	info.Application = strings.Join(reasons, ", ")
+	return info
+}
+
+func printPacketInfo(info *PacketInfo) {
+	fmt.Printf(
+		"\n[!] Interesting Packet Detected [%s]\n",
+		info.Timestamp.Format("15:04:05"),
+	)
+
+	fmt.Printf(
+		"    %s:%d → %s:%d\n",
+		info.SrcIP,
+		info.SrcPort,
+		info.DstIP,
+		info.DstPort,
+	)
+
+	fmt.Printf(
+		"    Protocol: %s | Size: %d bytes\n",
+		info.Protocol,
+		info.PayloadSize,
+	)
+
+	if info.Application != "" {
+		fmt.Printf("    Reason(s): %s\n", info.Application)
+	}
+
+	if info.SNI != "" {
+		fmt.Printf("    SNI: %s\n", info.SNI)
+	}
+
+	if info.TLSVersion != "" {
+		fmt.Printf("    TLS Version: %s\n", info.TLSVersion)
+	}
+
+	if info.HTTPHost != "" {
+		fmt.Printf("    Host: %s\n", info.HTTPHost)
+	}
+
+	if info.ContentType != "" {
+		fmt.Printf("    Content-Type: %s\n", info.ContentType)
+	}
+
+	if info.PayloadHex != "" {
+		fmt.Printf("    Payload Preview: %s\n", info.PayloadHex)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// extractSNI implementation remains the same as in your original code
 func extractSNI(payload []byte) string {
 	if len(payload) < 43 {
 		return ""
 	}
 
-	// Skip record header (5 bytes) and handshake header (4 bytes)
 	pos := 43
-
-	// Skip session ID
 	if pos+1 >= len(payload) {
 		return ""
 	}
-	sessionIDLength := int(payload[pos])
-	pos += 1 + sessionIDLength
+	pos += 1 + int(payload[pos])
 
-	// Skip cipher suites
 	if pos+2 >= len(payload) {
 		return ""
 	}
-	cipherSuitesLength := int(binary.BigEndian.Uint16(payload[pos : pos+2]))
-	pos += 2 + cipherSuitesLength
+	pos += 2 + int(binary.BigEndian.Uint16(payload[pos:pos+2]))
 
-	// Skip compression methods
 	if pos+1 >= len(payload) {
 		return ""
 	}
-	compressionMethodsLength := int(payload[pos])
-	pos += 1 + compressionMethodsLength
+	pos += 1 + int(payload[pos])
 
-	// Read extensions length
 	if pos+2 >= len(payload) {
 		return ""
 	}
 	extensionsLength := int(binary.BigEndian.Uint16(payload[pos : pos+2]))
 	pos += 2
 
-	// Parse extensions
 	endOfExtensions := pos + extensionsLength
 	for pos+4 <= endOfExtensions {
 		extensionType := binary.BigEndian.Uint16(payload[pos : pos+2])
 		extensionLength := int(binary.BigEndian.Uint16(payload[pos+2 : pos+4]))
 		pos += 4
 
-		// SNI extension type is 0
 		if extensionType == 0 {
-			// Skip server name list length
 			if pos+2 > len(payload) {
 				return ""
 			}
 			pos += 2
 
-			// Skip server name type
 			if pos+1 > len(payload) {
 				return ""
 			}
 			pos++
 
-			// Read server name length
 			if pos+2 > len(payload) {
 				return ""
 			}
 			serverNameLength := int(binary.BigEndian.Uint16(payload[pos : pos+2]))
 			pos += 2
 
-			// Read server name
 			if pos+serverNameLength > len(payload) {
 				return ""
 			}
